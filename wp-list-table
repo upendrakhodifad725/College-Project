@@ -1,0 +1,210 @@
+<?php
+/* How to display custom table data in wordpress dashboard by WP_List_Table */
+class fc_mail_display_templates extends WP_List_Table
+{
+    function __construct()
+    {
+        global $status, $page;
+        parent::__construct(array(
+            'singular' => 'person',
+            'plural' => 'persons',
+        ));
+    }
+    
+    function column_default($item, $column_name)
+    {
+        return $item[$column_name];
+    }
+
+    function column_age($item)
+    {
+        return '<em>' . $item['age'] . '</em>';
+    }
+    
+    function column_templateid($item)
+    {
+        $actions = array(
+            'edit' => sprintf('<a href="?page=%s&action=edit&id=%s&tab=create-template">%s</a>', $_REQUEST['page'], $item['templateid'], __('Edit', 'cltd_example')),
+            'delete' => sprintf('<a href="?page=%s&action=delete&id=%s&tab=template-list">%s</a>', $_REQUEST['page'], $item['templateid'], __('Delete', 'cltd_example')),
+        );
+        return sprintf('%s %s',
+            $item['templateid'],
+            $this->row_actions($actions)
+        );
+    }
+
+    function column_theme_list($item){
+        echo get_user_meta($item[id],'fc_mail_purchased',true);
+    }
+    
+    function column_cb($item)
+    {
+        return sprintf(
+            '<input type="checkbox" name="id[]" value="%s" />',
+            $item['templateid']
+        );
+    }
+    
+    function get_columns()
+    {
+        $columns = array(
+            'cb' => '<input type="checkbox" />', //Render a checkbox instead of text
+            'templateid' => 'Template ID',
+            'dateadded' => 'Date of Created',
+            'name' => 'Template Name',
+            'subject' => 'Subject of Email Template',
+        );
+        return $columns;
+    }
+    
+    function get_sortable_columns()
+    {
+        $sortable_columns = array(
+            'templateid' => array('templateid',true),
+            'name' => array('name',true),
+            'subject' => array('subject',true),
+        );
+        return $sortable_columns;
+    }
+    
+    function get_bulk_actions()
+    {
+        $actions = array(
+            'delete' => 'Delete'
+        );
+        return $actions;
+    }
+
+    function array_sort($array, $on, $order=SORT_ASC){
+        
+        $new_array = array();
+        $sortable_array = array();
+
+        if (count($array) > 0) {
+            foreach ($array as $k => $v) {
+                if (is_array($v)) {
+                    foreach ($v as $k2 => $v2) {
+                        if ($k2 == $on) {
+                            $sortable_array[$k] = $v2;
+                        }
+                    }
+                } else {
+                    $sortable_array[$k] = $v;
+                }
+            }
+
+            switch ($order) {
+                case "SORT_ASC":
+                    asort($sortable_array);
+                    break;
+                case "SORT_DESC":
+                    arsort($sortable_array);
+                    break;
+            }
+
+            foreach ($sortable_array as $k => $v) {
+                $new_array[$k] = $array[$k];
+            }
+        }
+        return $new_array;
+    }
+    
+    function process_bulk_action()
+    {
+        if ('delete' === $this->current_action()) {
+            $option_data=get_option("fc_mail_settings");
+            $url="https://api.elasticemail.com/v2/template/delete?apikey=".$option_data['elastic-email-api']."&templateID=";
+            $ids = isset($_REQUEST['id']) ? $_REQUEST['id'] : array();
+
+            if (is_array($ids)) {
+                foreach($ids as $id){
+                    $url.=$id;
+                    $response=wp_remote_get($url);
+                    if(fc_mail_is_api_error($response))
+                        throw new Exception();
+
+                    $url=str_replace("=".$id,"=",$url);
+                }
+            }
+            else if(count($ids)==1){
+                $url.=$ids;
+                $response=wp_remote_get($url);
+                if(fc_mail_is_api_error($response))
+                    throw new Exception();
+            }
+        }
+    }
+    
+    function prepare_items($search='')
+    {
+        $paged = isset($_REQUEST['paged']) ? max(0, intval($_REQUEST['paged']) - 1) : 0;
+        $per_page = 15; 
+        $columns = $this->get_columns();
+        $hidden = array();
+        $sortable = $this->get_sortable_columns();
+        
+        $this->_column_headers = array($columns, $hidden, $sortable);
+        
+        $this->process_bulk_action();
+        $option_data=get_option("fc_mail_settings");
+        $url="https://api.elasticemail.com/v2/template/getlist?apikey=".$option_data['elastic-email-api'];
+        $response=wp_remote_get($url);
+        if(fc_mail_is_api_error($response))
+            throw new Exception();
+
+        $temp_list=json_decode($response['body']);
+        $temp_list=$temp_list->data;
+        $temp_list_arr=$temp_list->templates;
+
+        $total_items = sizeof($temp_list_arr);
+        
+        $orderby = (isset($_REQUEST['orderby']) && in_array($_REQUEST['orderby'], array_keys($this->get_sortable_columns()))) ? $_REQUEST['orderby'] : 'dateadded';
+        $order = (isset($_REQUEST['order']) && in_array($_REQUEST['order'], array('asc', 'desc'))) ? $_REQUEST['order'] : 'asc';
+
+        $data = json_decode(json_encode($temp_list_arr),true);
+
+        $this->items = $this->array_sort($data, $orderby, "SORT_".strtoupper($order));
+
+        $this->items = array_slice($this->items,(($paged)*$per_page),$per_page);
+
+        $this->set_pagination_args(array(
+            'total_items' => $total_items, 
+            'per_page' => $per_page, 
+            'total_pages' => ceil($total_items / $per_page) 
+        ));
+    }
+}
+
+function fc_mail_display_templates()
+{
+    global $wpdb;
+    $table = new fc_mail_display_templates();
+
+    $message = '';
+    if ('delete' === $table->current_action()) {
+        $message = '<div class="updated below-h2" id="message"><p>' . sprintf(__('Items deleted: %d', 'cltd_example'), count($_REQUEST['id'])) . '</p></div>';
+    }
+    ?>
+    <div class="wrap">
+
+    <div class="icon32 icon32-posts-post" id="icon-edit"><br></div>
+    <?php echo $message; ?>
+
+    <form id="persons-table" method="GET">
+        <input type="hidden" name="page" value="<?php echo $_REQUEST['page'] ?>"/>
+        <?php 
+            if( isset($_POST['s']) )
+            {
+                $table->prepare_items($_POST['s']);
+            } 
+            else 
+            {
+                $table->prepare_items();
+            }
+            $table->display() 
+        ?>
+    </form>
+
+</div>
+<?php
+}
